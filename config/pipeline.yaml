@@ -1,0 +1,139 @@
+# Central configuration for the stackPRS pipeline.
+#
+# Logic: pretrained PRS are taken from the PGS Catalog (steps 01-04) and used
+# as features; an ensemble (uniLasso in Python + R, AutoGluon, lasso) is fitted
+# on top of them to "fine-tune" a risk score for one disease (steps 05-07).
+#
+# Paths are relative to the project root; absolute paths are also accepted.
+
+paths:
+  plink_prefix: ../UKB_CRC.QC      # PLINK1 bfile prefix (.bed/.bim/.fam)
+  pheno: ../UKB_CRC.pheno          # FID IID phenotype   (0/1 or PLINK 1/2 coding)
+  covariate: ../UKB_CRC.covariate  # FID IID Sex PC1..PC6
+  work_dir: data                   # all generated artefacts land here
+
+target:
+  build: GRCh38        # build of YOUR genotype files (UKB_CRC.QC is GRCh38); step 00 verifies it
+  sampleset: UKB_CRC   # pgsc_calc sampleset name (also the results sub-directory)
+  format: bfile        # bfile | pfile | vcf
+  pheno_col: phenotype
+
+catalog:
+  api_base: https://www.pgscatalog.org/rest
+  page_size: 250
+
+# --------------------------------------------------------------------------- #
+# Which pretrained PRS to use (step 02). Per-score reasons: data/filter_decisions.csv
+# --------------------------------------------------------------------------- #
+filters:
+  # Cohort exclusions: drop scores whose GWAS or score training used any of these
+  # cohorts — your target cohort (leakage) and any cohort you must not build on.
+  leakage:
+    exclude_cohorts:
+      - UKB                        # UK Biobank: the target cohort (leakage)
+      - AllofUs                    # All of Us Research Program (remove this line to keep its scores)
+                                   # any other Catalog short name works too (e.g. FinnGen, MVP),
+                                   # matched on the structured cohort list only
+    use_text_evidence: true        # also catch UKB / All of Us named only in sample free text
+                                   # ("UKB GWAS", Neale lab URLs); negated mentions
+                                   # ("UKB excluded", "without UKB") are ignored
+    member_consortia:              # consortia whose meta-analyses include a listed cohort
+      UKB: [GBMI]
+    on_unknown_provenance: drop    # scores listing no cohorts at all: drop | keep
+
+  min_variants: 10                 # drop trivial candidate-gene scores
+  max_variants: 5000000
+
+  # Ancestry transferability: keep scores derived mostly in your cohort's ancestry.
+  ancestry:
+    enabled: true
+    target: [EUR]                  # GWAS-Catalog ancestry code(s); a list is summed
+    source: gwas                   # judge by the gwas | dev | eval sample group
+    min_target_fraction: 80        # keep if >= this % of `source` samples are `target`
+    on_missing: drop               # score does not report the `source` group: drop | keep
+
+  # Phenotype scope, resolved through the Catalog's trait ontology (descendants included):
+  #   all      every score (pleiotropy-agnostic)
+  #   same     only scores for target_traits
+  #   related  target_traits + related_traits + related_categories (e.g. all cancers)
+  #   other    everything except target_traits (pleiotropy-only sensitivity analysis)
+  phenotype:
+    scope: all
+    target_traits: [MONDO_0005575]     # colorectal cancer (88 PGS incl. subtypes)
+    related_traits: [MONDO_0004992]    # cancer — used when scope: related
+    related_categories: []             # Catalog categories, e.g. ["Digestive system disorder"];
+                                       # note there is no "Cancer" category, use MONDO_0004992
+
+# --------------------------------------------------------------------------- #
+# Computing the PRS with pgsc_calc (steps 00, 03)
+# --------------------------------------------------------------------------- #
+chunk:                       # one pgsc_calc run (= one Slurm array task) per chunk
+  size: 200                  # max scores per run
+  max_variants: 10000000     # max scoring-file variants per run: pgsc_calc's time and memory scale with
+                             # variants, not scores (measured: ~24 s and ~0.4 GB per million, 2 threads)
+
+run:
+  pipeline_version: v2.3.0   # pgsc_calc release (-r); pinned for reproducibility
+  min_overlap: 0.75          # pgsc_calc default: scores matching < 75% of variants are dropped.
+                             # Array genotypes match few variants of genome-wide scores —
+                             # prefer imputed data over lowering this.
+  profile: docker            # docker | singularity | conda   (local runner; +arm added on Apple Silicon)
+  jobs: auto                 # concurrent runs; auto = as many as Docker's (or the host's) CPUs and memory allow
+  cpus_per_job: 2            # threads per run: formatting got only 1.4x faster with 6x the threads (measured),
+                             # so parallel runs beat more threads per run
+  memory_per_job: 8          # GB per run: formatting peaked at 7.3-9.6 GB for 18.5 M variants (measured),
+                             # i.e. ~5 GB for a chunk of <= chunk.max_variants, plus headroom
+  prefetch_scorefiles: true  # download scoring files once, in parallel, md5-checked (data/scorefiles/)
+  download_workers: 8        # parallel downloads (pgsc_calc itself downloads one file at a time)
+  extra_config: null         # optional extra Nextflow -c config
+
+score_value: SUM             # SUM (weighted allele sum) or AVG (SUM / DENOM)
+
+# --------------------------------------------------------------------------- #
+# Modelling dataset (step 05)
+# --------------------------------------------------------------------------- #
+dataset:
+  min_complete: 0.90         # fraction of individuals with a value
+  min_match_rate: 0.0        # extra QC on pgsc_calc's variant match rate (0 = rely on min_overlap)
+  # Regress each PRS on these covariates (label-free) and model the residuals.
+  # In UKB_CRC the PCs separate cases from controls (PC3 alone: AUC 0.886), a
+  # batch/ancestry artefact. With residualisation the AUCs are a conservative
+  # lower bound (genuine signal aligned with PC3 is removed too); with [] they are
+  # an upper bound (the artefact can inflate them). Run both; fix QC upstream.
+  residualize_on: [PC1, PC2, PC3, PC4, PC5, PC6]
+
+# --------------------------------------------------------------------------- #
+# Ensemble fitted on top of the pretrained PRS (step 06)
+# --------------------------------------------------------------------------- #
+ensemble:
+  learners: [unilasso_py, unilasso_r, autogluon, lasso]
+  use_covariates: false      # false: genetic-only learners; covariates enter via the
+                             # separate `ensemble_plus_covariates` stacker and baseline
+  outer_folds: 5             # evaluation: >=2 = nested CV, 1 = single stratified holdout
+  test_size: 0.2             # holdout fraction when outer_folds: 1
+  inner_folds: 5             # folds producing the out-of-fold predictions the stacker learns from
+  seed: 42
+  n_bootstrap: 1000          # bootstrap resamples for AUC confidence intervals
+  unilasso:
+    n_folds: 10              # uniLasso's own CV for lambda (both implementations)
+    lambda_rule: lambda.min  # R: lambda.min | lambda.1se (Python always uses the CV minimum)
+    rscript: Rscript         # path to Rscript with install.packages("uniLasso") done
+  autogluon:
+    presets: medium_quality  # medium_quality | good_quality | high_quality | best_quality
+    time_limit: 300          # seconds per AutoGluon fit (there are outer*(inner+1) + inner+1 fits)
+    eval_metric: roc_auc
+    num_cpus: auto
+    hyperparameters: null    # null = preset default model zoo
+  lasso:
+    n_folds: 5
+    n_cs: 20
+
+# --------------------------------------------------------------------------- #
+# Interpretation (steps 06-07)
+# --------------------------------------------------------------------------- #
+importance:
+  autogluon_permutation: true     # permutation importance on held-out outer folds
+  autogluon_max_features: 200     # PGS selected by linear learners first, then top univariate AUC
+  subsample_size: 5000
+  num_shuffle_sets: 3
+  time_limit: 600                 # seconds per fold

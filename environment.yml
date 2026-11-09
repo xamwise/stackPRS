@@ -1,0 +1,33 @@
+name: stackprs
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - openjdk>=17        # required by Nextflow
+  - nextflow>=23.10
+  - pip
+  # All Python packages come from pip in one resolver, which avoids conda/pip
+  # NumPy clashes with AutoGluon and numba.
+  - pip:
+      - numpy
+      - pandas
+      - scipy
+      - scikit-learn>=1.5,<1.10
+      - pyyaml
+      - requests
+      - pyarrow<26   # adelie (Python uniLasso) needs numpy<2; pyarrow>=26 needs numpy>=2 at import
+                     # without declaring it, so pip would install a pyarrow that cannot load
+      - tqdm
+      - matplotlib
+      - pytest
+      - autogluon.tabular[all]==1.6.3
+      # Python uniLasso (not on PyPI); pinned commit. Pulls in adelie + numba.
+      - "unilasso @ git+https://github.com/sophial05/uni-lasso.git@c184540"
+
+# Not installed here:
+#   - R (>= 3.6) with the CRAN package uniLasso, for the `unilasso_r` learner:
+#       Rscript -e 'install.packages("uniLasso", repos = "https://cloud.r-project.org")'
+#     (or `make r-deps`). Point ensemble.unilasso.rscript at that Rscript.
+#   - the container runtime for pgsc_calc: Docker locally (`run.profile: docker`),
+#     Singularity/Apptainer on HPC (`-profile singularity`).

@@ -1,0 +1,24 @@
+# Generated artefacts
+data/
+!data/.gitkeep
+
+# Nextflow
+.nextflow/
+.nextflow.log*
+work/
+*.singularity
+singularity_cache/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+.pytest_cache/
+
+# Local genotype test data (large, not for version control)
+test_data/
+.Rhistory
