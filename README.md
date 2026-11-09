@@ -35,7 +35,7 @@ Everything is driven by [`config/pipeline.yaml`](config/pipeline.yaml).
 ```bash
 conda env create -f environment.yml && conda activate stackprs
 make r-deps          # CRAN uniLasso for the R learner (needs R >= 3.6)
-make test            # offline tests, ~20 s
+make test            # offline tests, ~10 s
 
 make metadata        # 01  all PGS Catalog scores + cohort evidence (~1 min)
 make filter          # 02  cohort / ancestry / phenotype filters -> variant-balanced chunks
@@ -378,7 +378,9 @@ risk_adj = model.predict_proba(X, Z=cov)  # + sex/PCs (stacker with covariates)
 - pgsc_calc's output formats: long format, `_hmPOS_` IDs, reference-panel rows,
   mixed ID types, match summaries;
 - the filter funnel and phenotype scopes;
-- the parallel runner, against a stub `nextflow`;
+- the parallel runner, against a stub `nextflow`, and its resource sizing;
+- genome-build detection, the `.bim` centimorgan fix and stale-genotype handling;
+- the scoring-file cache (MD5 checks) and variant-balanced chunking;
 - train/inference consistency of the feature transform;
 - both uniLasso implementations, including the `extract_cv` regression;
 - the stacker and the nested CV.
@@ -390,9 +392,10 @@ R and AutoGluon tests skip themselves when the software is missing;
 
 ```
 config/      pipeline.yaml, spartan.config (HPC), samplesheet.csv (template)
-stackprs/    catalog.py (API, cohort evidence, traits) · genotypes.py (build check) ·
-             scorefiles.py (prefetch cache) · data.py (pgsc_calc IO) ·
-             learners.py · ensemble.py · r/unilasso_fit.R
+stackprs/    catalog.py (API, cohort evidence, traits)
+             genotypes.py (build check) · scorefiles.py (prefetch cache)
+             data.py (pgsc_calc IO) · learners.py · ensemble.py
+             r/unilasso_fit.R
 scripts/     00–07 pipeline stages
 tests/       pytest suite
 data/        generated artefacts (gitignored)
